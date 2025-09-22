@@ -3,12 +3,13 @@ import requests
 import re
 import concurrent.futures
 import datetime
+import os
 from urllib.parse import urlparse, parse_qs
 
 app = Flask(__name__)
 
 # ================== CONFIG ==================
-TMDB_API_KEY = "6360eb433f3020d94a5de4f0fb52c720"
+TMDB_API_KEY = os.environ.get("TMDB_API_KEY", "6360eb433f3020d94a5de4f0fb52c720")
 CURL_TIMEOUT = 10
 CURL_CONNECT_TIMEOUT = 5
 
@@ -20,8 +21,10 @@ def http_get_json(url, timeout=CURL_TIMEOUT):
             "User-Agent": "Mozilla/5.0 (compatible; IPTV-Collector/1.0)"
         })
         response.raise_for_status()
+        print(f"Requisição bem-sucedida para: {url}")
         return response.json()
     except requests.exceptions.RequestException as e:
+        print(f"Erro na requisição para {url}: {e}")
         return {"_error": str(e), "_raw": response.text if response.text else None}
 
 def iconv_safe(s):
@@ -40,7 +43,7 @@ def normalize_title(s):
     """Normaliza o título para comparação."""
     s = iconv_safe(s)
     s = s.lower()
-    s = re.sub(r'[\(\[\{][^\)\]\}]*[\)\]\}]', ' ', s) # Remove texto entre () [] {}
+    s = re.sub(r'[\(\[\{][^\)\]\}]*[\)\]\}]', ' ', s)
     s = s.replace('&', ' ').replace('+', ' ')
     s = re.sub(r'[^\w\s]', ' ', s)
     stop_words = [
@@ -92,9 +95,11 @@ def get_classification_movie(details):
     return ""
 
 def handle_movie_request(nome, stream_id, iptv_category_id, iptv_poster, iptv_stream_url):
+    print(f"Iniciando busca por filme: {nome}")
     year = guess_year_from_title(nome)
     search_results = tmdb_search_movie(nome, TMDB_API_KEY, year)
     if not search_results or not search_results.get('results'):
+        print(f"Filme '{nome}' não encontrado no TMDb.")
         return {"error": "Filme não encontrado no TMDb"}
 
     nome_norm = normalize_title(nome)
@@ -112,9 +117,14 @@ def handle_movie_request(nome, stream_id, iptv_category_id, iptv_poster, iptv_st
             best_movie = movie
 
     if not best_movie:
+        print(f"Não foi possível determinar o melhor resultado para '{nome}'.")
         return {"error": "Não foi possível determinar o melhor resultado no TMDb"}
 
     details = tmdb_get_details_movie(best_movie['id'], TMDB_API_KEY)
+    if details.get('_error'):
+        print(f"Erro ao obter detalhes de filme: {details['_error']}")
+        return {"error": "Falha ao obter detalhes do filme no TMDb"}
+
     trailer = ""
     for v in details.get('videos', {}).get('results', []):
         if v.get('type') == 'Trailer' and v.get('key'):
@@ -153,6 +163,7 @@ def handle_movie_request(nome, stream_id, iptv_category_id, iptv_poster, iptv_st
     response['generos'] = generos
     elenco = [{"name": c.get('name', ""), "foto": f"https://image.tmdb.org/t/p/w200{c['profile_path']}" if c.get('profile_path') else ""} for c in details.get('credits', {}).get('cast', [])[:10]]
     response['elenco'] = elenco
+    print(f"Filme '{nome}' processado com sucesso.")
     return response
 
 # ================== LÓGICA DE SÉRIES ==================
@@ -220,7 +231,10 @@ def tmdb_get_seasons_parallel(tv_id, seasons, api_key):
                 resp.raise_for_status()
                 sn = int(url.split('/')[-1].split('?')[0])
                 responses[sn] = resp.json()
-            except requests.exceptions.RequestException: pass
+                print(f"Requisição de temporada {sn} bem-sucedida.")
+            except requests.exceptions.RequestException as e:
+                print(f"Erro na requisição de temporada {sn}: {e}")
+                pass
     return responses
 
 def get_classification_series(details):
@@ -254,17 +268,22 @@ def iptv_build_episode_id_map(iptv_stream_url):
     return episode_map
 
 def handle_series_request(nome, series_id, iptv_category_id, iptv_poster, iptv_stream_url):
+    print(f"Iniciando busca por série: {nome}")
     search_results = tmdb_search_series_strategy(nome, TMDB_API_KEY)
     results = search_results.get('results', [])
     if not results:
+        print(f"Série '{nome}' não encontrada no TMDb.")
         return {"error": "Série não encontrada no TMDb", "debug": {"query_enviada": nome, "query_limpa": clean_query_title_series(nome)}}
     year_guess = guess_year_from_title(nome)
     best_candidate = max(results, key=lambda c: score_candidate_series(nome, c, year_guess), default=None)
     if not best_candidate or not best_candidate.get('id'):
+        print(f"Não foi possível determinar o melhor resultado para '{nome}'.")
         return {"error": "Não foi possível determinar o melhor resultado no TMDb"}
     details = tmdb_get_details_series(best_candidate['id'], TMDB_API_KEY)
     if details.get('_error'):
+        print(f"Erro ao obter detalhes de série: {details['_error']}")
         return {"error": "Falha ao obter detalhes da série no TMDb", "tmdb_error": details['_error']}
+
     trailer = ""
     for v in details.get('videos', {}).get('results', []):
         if v.get('type') == 'Trailer' and v.get('key'):
@@ -306,13 +325,21 @@ def handle_series_request(nome, series_id, iptv_category_id, iptv_poster, iptv_s
                 "air_date": ep.get('air_date', ""), "still_path": f"https://image.tmdb.org/t/p/w300{ep['still_path']}" if ep.get('still_path') else "",
                 "url": play_url
             })
+    print(f"Série '{nome}' processada com sucesso.")
     return {"serie": serie, "temporadas": temporadas, "episodios": episodios}
 
 # ================== ROTEADOR PRINCIPAL ==================
+@app.route('/')
+def home():
+    """Rota de teste para verificar se a API está online."""
+    print("Requisição para a rota principal ('/') recebida.")
+    return jsonify({"status": "API online", "message": "Use o endpoint /info para obter dados."})
+
 @app.route('/info')
 def api_info():
     """Endpoint unificado para obter informações de filmes ou séries."""
     tipo = request.args.get('tipo', '').lower()
+    print(f"Requisição recebida para o tipo: {tipo}")
 
     if tipo == 'movies':
         response = handle_movie_request(
@@ -331,7 +358,8 @@ def api_info():
             request.args.get('iptv_stream_url', '')
         )
     else:
+        print("Tipo de consulta inválido.")
         response = {"error": "Tipo de consulta inválido. Use 'tipo=movies' ou 'tipo=series'."}
 
     return jsonify(response)
-
+    
