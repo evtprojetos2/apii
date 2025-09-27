@@ -9,7 +9,7 @@ from urllib.parse import urlparse, parse_qs
 app = Flask(__name__)
 
 # ================== CONFIG ==================
-TMDB_API_KEY = os.environ.get("TMDB_API_KEY", "6360eb433f3020d94a5de4f0fb52c720")
+TMDB_API_KEY = os.environ.get("TMDB_API_KEY", "bb5ecdb97cbb2d4259e52a77109dafa8")
 CURL_TIMEOUT = 10
 CURL_CONNECT_TIMEOUT = 5
 
